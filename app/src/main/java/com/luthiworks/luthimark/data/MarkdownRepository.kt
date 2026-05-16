@@ -59,10 +59,52 @@ class MarkdownRepository(private val context: Context) {
             FolderContents(folders, files)
         }
 
-    suspend fun read(uri: Uri): String = withContext(Dispatchers.IO) {
-        context.contentResolver.openInputStream(uri)?.use { stream ->
-            stream.bufferedReader().readText()
-        } ?: ""
+    suspend fun read(uri: Uri): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                stream.bufferedReader().readText()
+            }
+        }.getOrNull()
+    }
+
+    suspend fun validateOrLocate(entry: RecentEntry): RecentEntry? = withContext(Dispatchers.IO) {
+        if (documentExists(entry.fileUri)) return@withContext entry
+        val located = findByName(entry.workspaceUri, entry.fileName) ?: return@withContext null
+        entry.copy(fileUri = located.uri, subPath = located.subPath)
+    }
+
+    private fun documentExists(uri: Uri): Boolean = runCatching {
+        DocumentFile.fromSingleUri(context, uri)?.exists() == true
+    }.getOrDefault(false)
+
+    private data class LocatedFile(val uri: Uri, val subPath: List<String>)
+
+    private fun findByName(workspaceUri: Uri, fileName: String): LocatedFile? {
+        val root = DocumentFile.fromTreeUri(context, workspaceUri) ?: return null
+        return searchByName(root, fileName, mutableListOf())
+    }
+
+    private fun searchByName(
+        folder: DocumentFile,
+        target: String,
+        path: MutableList<String>,
+    ): LocatedFile? {
+        val children = runCatching { folder.listFiles() }.getOrDefault(emptyArray())
+        for (child in children) {
+            if (child.isFile && child.name == target) {
+                return LocatedFile(child.uri, path.toList())
+            }
+        }
+        for (child in children) {
+            if (child.isDirectory) {
+                val childName = child.name ?: continue
+                path.add(childName)
+                val found = searchByName(child, target, path)
+                path.removeAt(path.lastIndex)
+                if (found != null) return found
+            }
+        }
+        return null
     }
 
     suspend fun write(uri: Uri, content: String): Boolean = withContext(Dispatchers.IO) {

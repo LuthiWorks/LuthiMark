@@ -18,7 +18,7 @@ private val CURRENT_ROOT = stringPreferencesKey("current_root")
 private val RECENT_FILES = stringSetPreferencesKey("recent_files")
 private val STARRED_FILES = stringSetPreferencesKey("starred_files")
 
-private const val MAX_RECENTS = 20
+internal const val MAX_RECENTS = 3
 private const val FIELD_SEP = "\u001F"
 private const val SUBPATH_SEP = "\u001E"
 
@@ -86,6 +86,16 @@ class AppPreferences(private val context: Context) {
                 .map { encodeRecent(it) }
                 .toSet()
             prefs[RECENT_FILES] = updated
+        }
+    }
+
+    suspend fun replaceRecents(entries: List<RecentEntry>) {
+        context.dataStore.edit { prefs ->
+            prefs[RECENT_FILES] = entries
+                .sortedByDescending { it.timestamp }
+                .take(MAX_RECENTS)
+                .map { encodeRecent(it) }
+                .toSet()
         }
     }
 

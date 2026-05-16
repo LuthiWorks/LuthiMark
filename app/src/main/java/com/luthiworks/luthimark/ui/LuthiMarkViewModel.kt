@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.luthiworks.luthimark.data.AppPreferences
+import com.luthiworks.luthimark.data.MAX_RECENTS
 import com.luthiworks.luthimark.data.MarkdownFile
 import com.luthiworks.luthimark.data.MarkdownFolder
 import com.luthiworks.luthimark.data.MarkdownRepository
@@ -79,6 +80,20 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
             val initial = state.currentRoot?.takeIf { uri -> workspaces.any { it.uri == uri } }
                 ?: workspaces.firstOrNull()?.uri
             if (initial != null) activateRoot(initial)
+            cleanRecents()
+        }
+    }
+
+    private suspend fun cleanRecents() {
+        val workspaceUris = workspaces.map { it.uri }.toSet()
+        val current = recents
+        val cleaned = current.mapNotNull { entry ->
+            if (entry.workspaceUri !in workspaceUris) return@mapNotNull null
+            repo.validateOrLocate(entry)
+        }
+        if (cleaned != current) {
+            recents = cleaned
+            prefs.replaceRecents(cleaned)
         }
     }
 
@@ -178,9 +193,25 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             loadingContent = true
             val text = repo.read(file.uri)
+            loadingContent = false
+            if (text == null) {
+                selectedFile = null
+                content = ""
+                originalContent = ""
+                statusMessage = "Couldn't open this file. It may have been moved or deleted."
+                val updatedRecents = recents.filter { it.fileUri != file.uri }
+                if (updatedRecents != recents) {
+                    recents = updatedRecents
+                    prefs.replaceRecents(updatedRecents)
+                }
+                if (starred.any { it.fileUri == file.uri }) {
+                    starred = starred.filter { it.fileUri != file.uri }
+                    prefs.removeStarred(file.uri)
+                }
+                return@launch
+            }
             originalContent = text
             content = text
-            loadingContent = false
             if (workspace != null) {
                 val entry = RecentEntry(
                     fileUri = file.uri,
@@ -191,6 +222,7 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 prefs.recordRecent(entry)
                 recents = (listOf(entry) + recents.filter { it.fileUri != file.uri })
+                    .take(MAX_RECENTS)
             }
         }
     }
