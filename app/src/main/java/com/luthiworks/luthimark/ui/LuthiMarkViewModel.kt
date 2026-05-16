@@ -81,6 +81,7 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
                 ?: workspaces.firstOrNull()?.uri
             if (initial != null) activateRoot(initial)
             cleanRecents()
+            cleanStarred()
         }
     }
 
@@ -94,6 +95,19 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
         if (cleaned != current) {
             recents = cleaned
             prefs.replaceRecents(cleaned)
+        }
+    }
+
+    private suspend fun cleanStarred() {
+        val workspaceUris = workspaces.map { it.uri }.toSet()
+        val current = starred
+        val cleaned = current.mapNotNull { entry ->
+            if (entry.workspaceUri !in workspaceUris) return@mapNotNull null
+            repo.validateOrLocate(entry)
+        }
+        if (cleaned != current) {
+            starred = cleaned
+            prefs.replaceStarred(cleaned)
         }
     }
 

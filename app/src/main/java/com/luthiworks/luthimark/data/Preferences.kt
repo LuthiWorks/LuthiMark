@@ -133,6 +133,14 @@ class AppPreferences(private val context: Context) {
         }
     }
 
+    suspend fun replaceStarred(entries: List<RecentEntry>) {
+        context.dataStore.edit { prefs ->
+            prefs[STARRED_FILES] = entries
+                .map { encodeRecent(it) }
+                .toSet()
+        }
+    }
+
     suspend fun pruneStarred(workspaceUri: Uri) {
         context.dataStore.edit { prefs ->
             val current = prefs[STARRED_FILES].orEmpty()
