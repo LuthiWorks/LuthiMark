@@ -2,6 +2,7 @@ package com.luthiworks.luthimark.data
 
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -114,6 +115,56 @@ class MarkdownRepository(private val context: Context) {
             }
             true
         }.getOrElse { false }
+    }
+
+    suspend fun queryDisplayName(uri: Uri): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull()
+    }
+
+    suspend fun saveContentToWorkspace(
+        rootUri: Uri,
+        fileName: String,
+        content: String,
+    ): Uri? = withContext(Dispatchers.IO) {
+        val folder = DocumentFile.fromTreeUri(context, rootUri) ?: return@withContext null
+        val safeName = fileName.ifBlank { "untitled.md" }
+        val existing = folder.findFile(safeName)
+        val target = existing
+            ?: folder.createFile(mimeTypeFor(safeName), safeName)
+            ?: return@withContext null
+        val ok = runCatching {
+            context.contentResolver.openOutputStream(target.uri, "wt")?.use { stream ->
+                stream.bufferedWriter().use { it.write(content) }
+            }
+            true
+        }.getOrDefault(false)
+        if (ok) target.uri else null
+    }
+
+    private fun mimeTypeFor(fileName: String): String {
+        val ext = fileName.substringAfterLast('.', "").lowercase()
+        return when (ext) {
+            "md", "markdown" -> "text/markdown"
+            "json", "jsonl", "ndjson" -> "application/json"
+            "yaml", "yml" -> "application/yaml"
+            "toml" -> "application/toml"
+            "csv" -> "text/csv"
+            "tsv" -> "text/tab-separated-values"
+            "py" -> "text/x-python"
+            "sh" -> "application/x-sh"
+            "xml" -> "application/xml"
+            else -> "text/plain"
+        }
     }
 
     suspend fun createMarkdownFile(

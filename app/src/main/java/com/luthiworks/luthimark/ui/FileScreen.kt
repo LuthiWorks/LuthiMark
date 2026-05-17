@@ -15,6 +15,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -73,6 +74,7 @@ fun FileScreen(
     onToggleEdit: (Boolean) -> Unit,
     onSave: () -> Unit,
     onBack: () -> Unit,
+    onSaveToWorkspace: (() -> Unit)? = null,
 ) {
     var showDiscardDialog by remember { mutableStateOf(false) }
     var searchActive by remember(fileName) { mutableStateOf(false) }
@@ -156,6 +158,14 @@ fun FileScreen(
                         }
                     },
                     actions = {
+                        if (onSaveToWorkspace != null) {
+                            IconButton(onClick = onSaveToWorkspace) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.DriveFileMove,
+                                    contentDescription = "Save to workspace",
+                                )
+                            }
+                        }
                         IconButton(onClick = activateSearch) {
                             Icon(Icons.Filled.Search, contentDescription = "Search in file")
                         }

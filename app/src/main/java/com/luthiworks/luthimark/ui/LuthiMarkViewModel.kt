@@ -63,6 +63,13 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
     var starred by mutableStateOf<List<RecentEntry>>(emptyList())
         private set
 
+    var externalFileUri by mutableStateOf<Uri?>(null)
+        private set
+    var pendingDetailNavigation by mutableStateOf<Uri?>(null)
+        private set
+
+    val isExternalFile: Boolean get() = externalFileUri != null
+
     val isDirty: Boolean get() = editing && content != originalContent
 
     val currentPathSegments: List<String> get() = pathStack.map { it.name }
@@ -199,7 +206,79 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
         refreshContents()
     }
 
+    fun openIntentUri(uri: Uri) {
+        viewModelScope.launch {
+            runCatching {
+                getApplication<Application>().contentResolver
+                    .takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            loadingContent = true
+            val text = repo.read(uri)
+            loadingContent = false
+            if (text == null) {
+                statusMessage = "Couldn't open the file"
+                return@launch
+            }
+            val displayName = repo.queryDisplayName(uri)
+                ?: uri.lastPathSegment?.substringAfterLast('/')
+                ?: "External file"
+            externalFileUri = uri
+            selectedFile = MarkdownFile(
+                uri = uri,
+                name = displayName,
+                lastModified = 0L,
+                sizeBytes = text.length.toLong(),
+            )
+            selectedFilePath = emptyList()
+            content = text
+            originalContent = text
+            editing = false
+            pendingDetailNavigation = uri
+        }
+    }
+
+    fun consumePendingDetailNavigation() {
+        pendingDetailNavigation = null
+    }
+
+    fun saveExternalToWorkspace(workspaceUri: Uri) {
+        if (externalFileUri == null) return
+        val fileToSave = selectedFile ?: return
+        viewModelScope.launch {
+            val resolver = getApplication<Application>().contentResolver
+            if (workspaces.none { it.uri == workspaceUri }) {
+                val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                runCatching { resolver.takePersistableUriPermission(workspaceUri, flags) }
+                prefs.addRoot(workspaceUri)
+                val newName = repo.rootName(workspaceUri) ?: "(unnamed)"
+                workspaces = (workspaces.filter { it.uri != workspaceUri } +
+                    Workspace(workspaceUri, newName))
+            }
+            val savedUri = repo.saveContentToWorkspace(workspaceUri, fileToSave.name, content)
+                ?: run {
+                    statusMessage = "Couldn't save to workspace"
+                    return@launch
+                }
+            externalFileUri = null
+            rootUri = workspaceUri
+            rootName = workspaces.firstOrNull { it.uri == workspaceUri }?.name
+            pathStack = emptyList()
+            prefs.setCurrentRoot(workspaceUri)
+            refreshContents()
+            val saved = MarkdownFile(
+                uri = savedUri,
+                name = fileToSave.name,
+                lastModified = System.currentTimeMillis(),
+                sizeBytes = content.length.toLong(),
+            )
+            openFile(saved)
+            statusMessage = "Saved to ${rootName ?: "workspace"}"
+        }
+    }
+
     fun openFile(file: MarkdownFile) {
+        externalFileUri = null
         selectedFile = file
         selectedFilePath = currentPathSegments
         editing = false
@@ -316,6 +395,7 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun resolveImageUri(relativePath: String): Uri? {
+        if (externalFileUri != null) return null
         val root = rootUri ?: return null
         return repo.resolveRelativeImage(root, selectedFilePath, relativePath)
     }
@@ -325,6 +405,7 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
         content = ""
         originalContent = ""
         editing = false
+        externalFileUri = null
     }
 
     fun toggleEditing(value: Boolean) {
