@@ -14,6 +14,7 @@ import com.luthiworks.luthimark.data.MarkdownFile
 import com.luthiworks.luthimark.data.MarkdownFolder
 import com.luthiworks.luthimark.data.MarkdownRepository
 import com.luthiworks.luthimark.data.RecentEntry
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 
@@ -76,20 +77,18 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
 
     val canGoUp: Boolean get() = pathStack.isNotEmpty()
 
-    init {
-        viewModelScope.launch {
-            val state = prefs.state.firstOrNull() ?: return@launch
-            workspaces = state.roots
-                .filter { hasPermission(it) }
-                .map { Workspace(it, repo.rootName(it) ?: "(unnamed)") }
-            recents = prefs.recents.firstOrNull().orEmpty()
-            starred = prefs.starred.firstOrNull().orEmpty()
-            val initial = state.currentRoot?.takeIf { uri -> workspaces.any { it.uri == uri } }
-                ?: workspaces.firstOrNull()?.uri
-            if (initial != null) activateRoot(initial)
-            cleanRecents()
-            cleanStarred()
-        }
+    private val initJob: Job = viewModelScope.launch {
+        val state = prefs.state.firstOrNull() ?: return@launch
+        workspaces = state.roots
+            .filter { hasPermission(it) }
+            .map { Workspace(it, repo.rootName(it) ?: "(unnamed)") }
+        recents = prefs.recents.firstOrNull().orEmpty()
+        starred = prefs.starred.firstOrNull().orEmpty()
+        val initial = state.currentRoot?.takeIf { uri -> workspaces.any { it.uri == uri } }
+            ?: workspaces.firstOrNull()?.uri
+        if (initial != null) activateRoot(initial)
+        cleanRecents()
+        cleanStarred()
     }
 
     private suspend fun cleanRecents() {
@@ -208,6 +207,7 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openIntentUri(uri: Uri) {
         viewModelScope.launch {
+            initJob.join()
             runCatching {
                 getApplication<Application>().contentResolver
                     .takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
