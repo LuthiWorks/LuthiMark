@@ -114,6 +114,12 @@ private fun LuthiMarkApp(viewModel: LuthiMarkViewModel) {
         }
     }
 
+    val documentPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) viewModel.openIntentUri(uri)
+    }
+
     BackHandler(enabled = viewModel.pathStack.isNotEmpty() && viewModel.selectedFile == null) {
         viewModel.goUp()
     }
@@ -189,6 +195,7 @@ private fun LuthiMarkApp(viewModel: LuthiMarkViewModel) {
                                 }
                             }
                         },
+                        onOpenFile = { documentPicker.launch(arrayOf("*/*")) },
                     )
                 }
             },

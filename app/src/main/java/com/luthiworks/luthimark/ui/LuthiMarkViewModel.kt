@@ -84,9 +84,6 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
             .map { Workspace(it, repo.rootName(it) ?: "(unnamed)") }
         recents = prefs.recents.firstOrNull().orEmpty()
         starred = prefs.starred.firstOrNull().orEmpty()
-        val initial = state.currentRoot?.takeIf { uri -> workspaces.any { it.uri == uri } }
-            ?: workspaces.firstOrNull()?.uri
-        if (initial != null) activateRoot(initial)
         cleanRecents()
         cleanStarred()
     }

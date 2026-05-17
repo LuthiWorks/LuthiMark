@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Description
@@ -81,6 +82,7 @@ fun HomeScreen(
     onToggleStarFile: (MarkdownFile) -> Unit,
     onToggleStarEntry: (RecentEntry) -> Unit,
     onCreateFile: (String) -> Unit,
+    onOpenFile: () -> Unit,
 ) {
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -100,13 +102,19 @@ fun HomeScreen(
                                 contentDescription = "Up one folder",
                             )
                         }
-                    } else if (hasAnyWorkspace) {
+                    } else {
                         IconButton(onClick = onOpenDrawer) {
                             Icon(Icons.Filled.Menu, contentDescription = "Workspaces")
                         }
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenFile) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.OpenInNew,
+                            contentDescription = "Open file",
+                        )
+                    }
                     if (rootUri != null) {
                         IconButton(onClick = onRefresh) {
                             Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
@@ -133,28 +141,31 @@ fun HomeScreen(
                 HorizontalDivider()
             }
             Box(modifier = Modifier.fillMaxSize()) {
+                val homeRecents = if (pathStack.isEmpty()) recents else emptyList()
+                val homeStarred = if (pathStack.isEmpty()) starred else emptyList()
                 when {
-                    rootUri == null -> EmptyState(
-                        title = "Pick a folder",
-                        body = "Choose a folder containing your .md or .markdown files. LuthiMark will remember it for next time.",
-                        actionLabel = "Choose folder",
-                        onAction = { folderPicker.launch(null) },
-                    )
                     loading -> Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center,
                     ) { CircularProgressIndicator() }
-                    folders.isEmpty() && files.isEmpty() -> EmptyState(
-                        title = "Empty folder",
-                        body = "No subfolders or markdown files here. Tap + to create a new file.",
-                        actionLabel = null,
-                        onAction = {},
-                    )
+                    rootUri == null && homeRecents.isEmpty() && homeStarred.isEmpty() ->
+                        WelcomeState(
+                            onOpenFile = onOpenFile,
+                            onChooseFolder = { folderPicker.launch(null) },
+                        )
+                    rootUri != null && pathStack.isNotEmpty() &&
+                        folders.isEmpty() && files.isEmpty() ->
+                        EmptyState(
+                            title = "Empty folder",
+                            body = "No subfolders or markdown files here. Tap + to create a new file.",
+                            actionLabel = null,
+                            onAction = {},
+                        )
                     else -> ContentList(
                         folders = folders,
                         files = files,
-                        recents = if (pathStack.isEmpty()) recents.take(5) else emptyList(),
-                        starred = if (pathStack.isEmpty()) starred else emptyList(),
+                        recents = homeRecents,
+                        starred = homeStarred,
                         isStarred = isStarred,
                         onEnterFolder = onEnterFolder,
                         onFileClick = onFileClick,
@@ -302,7 +313,8 @@ private fun ContentList(
                 HorizontalDivider()
             }
         }
-        if (starred.isNotEmpty() || recents.isNotEmpty()) {
+        val hasWorkspaceContent = folders.isNotEmpty() || files.isNotEmpty()
+        if ((starred.isNotEmpty() || recents.isNotEmpty()) && hasWorkspaceContent) {
             item(key = "files-header") {
                 SectionHeader("All files")
             }
@@ -407,6 +419,30 @@ private fun formatRecent(entry: RecentEntry): String {
     ).toString()
     return if (entry.subPath.isEmpty()) rel
     else "$rel · ${entry.subPath.joinToString(" / ")}"
+}
+
+@Composable
+private fun WelcomeState(
+    onOpenFile: () -> Unit,
+    onChooseFolder: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("Welcome to LuthiMark", style = MaterialTheme.typography.headlineSmall)
+        Text(
+            "Open a single file to read or edit, or add a folder to organize files into a workspace.",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 12.dp, bottom = 24.dp),
+        )
+        Button(onClick = onOpenFile) { Text("Open a file") }
+        TextButton(
+            onClick = onChooseFolder,
+            modifier = Modifier.padding(top = 8.dp),
+        ) { Text("Add a workspace folder") }
+    }
 }
 
 @Composable
