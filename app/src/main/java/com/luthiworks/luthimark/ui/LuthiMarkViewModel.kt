@@ -2,6 +2,7 @@ package com.luthiworks.luthimark.ui
 
 import android.app.Application
 import android.content.Intent
+import android.content.UriPermission
 import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -14,6 +15,7 @@ import com.luthiworks.luthimark.data.MarkdownFile
 import com.luthiworks.luthimark.data.MarkdownFolder
 import com.luthiworks.luthimark.data.MarkdownRepository
 import com.luthiworks.luthimark.data.RecentEntry
+import com.luthiworks.luthimark.data.uniqueFileName
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
@@ -21,6 +23,14 @@ import kotlinx.coroutines.launch
 data class Workspace(
     val uri: Uri,
     val name: String,
+)
+
+/** A save-to-workspace that would land on an existing file, waiting for the user to choose. */
+data class SaveConflict(
+    val workspaceUri: Uri,
+    val workspaceName: String,
+    val fileName: String,
+    val alternateName: String,
 )
 
 class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
@@ -68,6 +78,14 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var pendingDetailNavigation by mutableStateOf<Uri?>(null)
         private set
+    var saveConflict by mutableStateOf<SaveConflict?>(null)
+        private set
+
+    // The in-flight file read and folder listing. Starting a new one cancels
+    // the previous, so a slow read can never land after the user has moved on
+    // (which used to put one file's text under another file's name).
+    private var loadJob: Job? = null
+    private var refreshJob: Job? = null
 
     val isExternalFile: Boolean get() = externalFileUri != null
 
@@ -79,6 +97,7 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
 
     private val initJob: Job = viewModelScope.launch {
         val state = prefs.state.firstOrNull() ?: return@launch
+        releaseStrayGrants(keep = state.roots.toSet())
         workspaces = state.roots
             .filter { hasPermission(it) }
             .map { Workspace(it, repo.rootName(it) ?: "(unnamed)") }
@@ -121,8 +140,42 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
         return resolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }
     }
 
+    /**
+     * Workspace folders are the only persisted grants the app needs. Earlier
+     * builds also persisted one for every file opened from outside the app.
+     * Android caps how many an app may hold and drops the oldest first — which
+     * would be the workspaces — so anything that isn't a workspace is let go.
+     */
+    private fun releaseStrayGrants(keep: Set<Uri>) {
+        val resolver = getApplication<Application>().contentResolver
+        resolver.persistedUriPermissions
+            .filter { it.uri !in keep }
+            .forEach { release(it) }
+    }
+
+    private fun releaseGrant(uri: Uri) {
+        val resolver = getApplication<Application>().contentResolver
+        resolver.persistedUriPermissions
+            .filter { it.uri == uri }
+            .forEach { release(it) }
+    }
+
+    private fun release(permission: UriPermission) {
+        var flags = 0
+        if (permission.isReadPermission) flags = flags or Intent.FLAG_GRANT_READ_URI_PERMISSION
+        if (permission.isWritePermission) flags = flags or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        if (flags == 0) return
+        runCatching {
+            getApplication<Application>().contentResolver
+                .releasePersistableUriPermission(permission.uri, flags)
+        }
+    }
+
     fun addWorkspace(uri: Uri) {
         viewModelScope.launch {
+            // Startup releases grants that aren't workspaces; let it finish first so
+            // it can't release the grant this is about to take.
+            initJob.join()
             val resolver = getApplication<Application>().contentResolver
             val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             runCatching { resolver.takePersistableUriPermission(uri, flags) }
@@ -147,6 +200,7 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
             prefs.removeRoot(uri)
             prefs.pruneRecents(uri)
             prefs.pruneStarred(uri)
+            releaseGrant(uri)
             recents = recents.filter { it.workspaceUri != uri }
             starred = starred.filter { it.workspaceUri != uri }
             workspaces = workspaces.filter { it.uri != uri }
@@ -167,18 +221,24 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun clearActive() {
+        refreshJob?.cancel()
         rootUri = null
         rootName = null
         pathStack = emptyList()
         folders = emptyList()
         files = emptyList()
+        loadingFiles = false
     }
 
     fun refreshContents() {
         val root = rootUri ?: return
-        viewModelScope.launch {
+        val path = currentPathSegments
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
             loadingFiles = true
-            val contents = repo.listContents(root, currentPathSegments)
+            val contents = repo.listContents(root, path)
+            // A listing for a folder the user has already left is stale.
+            if (root != rootUri || path != currentPathSegments) return@launch
             folders = contents.folders
             files = contents.files
             loadingFiles = false
@@ -203,12 +263,12 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openIntentUri(uri: Uri) {
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             initJob.join()
-            runCatching {
-                getApplication<Application>().contentResolver
-                    .takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
+            // No persisted grant here: the grant that comes with the intent covers
+            // this session, and a persisted one was never used again (see
+            // releaseStrayGrants for why keeping them was harmful).
             loadingContent = true
             val text = repo.read(uri)
             loadingContent = false
@@ -220,6 +280,7 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
                 ?: uri.lastPathSegment?.substringAfterLast('/')
                 ?: "External file"
             externalFileUri = uri
+            saveConflict = null
             selectedFile = MarkdownFile(
                 uri = uri,
                 name = displayName,
@@ -242,6 +303,7 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
         if (externalFileUri == null) return
         val fileToSave = selectedFile ?: return
         viewModelScope.launch {
+            initJob.join()
             val resolver = getApplication<Application>().contentResolver
             if (workspaces.none { it.uri == workspaceUri }) {
                 val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
@@ -252,42 +314,81 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
                 workspaces = (workspaces.filter { it.uri != workspaceUri } +
                     Workspace(workspaceUri, newName))
             }
-            val savedUri = repo.saveContentToWorkspace(workspaceUri, fileToSave.name, content)
-                ?: run {
-                    statusMessage = "Couldn't save to workspace"
-                    return@launch
-                }
-            externalFileUri = null
-            rootUri = workspaceUri
-            rootName = workspaces.firstOrNull { it.uri == workspaceUri }?.name
-            pathStack = emptyList()
-            prefs.setCurrentRoot(workspaceUri)
-            refreshContents()
-            val saved = MarkdownFile(
-                uri = savedUri,
-                name = fileToSave.name,
-                lastModified = System.currentTimeMillis(),
-                sizeBytes = content.length.toLong(),
+            val name = fileToSave.name.ifBlank { "untitled.md" }
+            val taken = repo.childNames(workspaceUri)
+            if (taken.any { it.equals(name, ignoreCase = true) }) {
+                // Never overwrite silently: ask, offering a free name to keep both.
+                saveConflict = SaveConflict(
+                    workspaceUri = workspaceUri,
+                    workspaceName = workspaces.firstOrNull { it.uri == workspaceUri }?.name
+                        ?: "this workspace",
+                    fileName = name,
+                    alternateName = uniqueFileName(name, taken),
+                )
+                return@launch
+            }
+            finishSaveToWorkspace(workspaceUri, name, overwrite = false)
+        }
+    }
+
+    fun resolveSaveConflict(replace: Boolean) {
+        val conflict = saveConflict ?: return
+        saveConflict = null
+        viewModelScope.launch {
+            finishSaveToWorkspace(
+                workspaceUri = conflict.workspaceUri,
+                name = if (replace) conflict.fileName else conflict.alternateName,
+                overwrite = replace,
             )
-            openFile(saved)
-            statusMessage = "Saved to ${rootName ?: "workspace"}"
+        }
+    }
+
+    fun cancelSaveConflict() {
+        saveConflict = null
+    }
+
+    private suspend fun finishSaveToWorkspace(workspaceUri: Uri, name: String, overwrite: Boolean) {
+        // The external file may have been closed while the user was deciding.
+        if (externalFileUri == null) return
+        val originalName = selectedFile?.name
+        val saved = repo.saveContentToWorkspace(workspaceUri, name, content, overwrite) ?: run {
+            statusMessage = "Couldn't save to workspace"
+            return
+        }
+        externalFileUri = null
+        rootUri = workspaceUri
+        rootName = workspaces.firstOrNull { it.uri == workspaceUri }?.name
+        pathStack = emptyList()
+        prefs.setCurrentRoot(workspaceUri)
+        refreshContents()
+        openFile(saved)
+        val where = rootName ?: "workspace"
+        statusMessage = if (saved.name == originalName) {
+            "Saved to $where"
+        } else {
+            "Saved to $where as ${saved.name}"
         }
     }
 
     fun openFile(file: MarkdownFile) {
+        loadJob?.cancel()
         externalFileUri = null
+        saveConflict = null
         selectedFile = file
-        selectedFilePath = currentPathSegments
+        val subPath = currentPathSegments
+        selectedFilePath = subPath
         editing = false
+        content = ""
+        originalContent = ""
         val workspace = rootUri
-        viewModelScope.launch {
+        loadJob = viewModelScope.launch {
             loadingContent = true
             val text = repo.read(file.uri)
+            // Cancellation already stops superseded reads; this is the backstop.
+            if (selectedFile?.uri != file.uri) return@launch
             loadingContent = false
             if (text == null) {
                 selectedFile = null
-                content = ""
-                originalContent = ""
                 statusMessage = "Couldn't open this file. It may have been moved or deleted."
                 val updatedRecents = recents.filter { it.fileUri != file.uri }
                 if (updatedRecents != recents) {
@@ -307,7 +408,7 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
                     fileUri = file.uri,
                     fileName = file.name,
                     workspaceUri = workspace,
-                    subPath = currentPathSegments,
+                    subPath = subPath,
                     timestamp = System.currentTimeMillis(),
                 )
                 prefs.recordRecent(entry)
@@ -398,11 +499,15 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun closeFile() {
+        loadJob?.cancel()
+        loadJob = null
         selectedFile = null
         content = ""
         originalContent = ""
         editing = false
+        loadingContent = false
         externalFileUri = null
+        saveConflict = null
     }
 
     fun toggleEditing(value: Boolean) {
@@ -418,13 +523,20 @@ class LuthiMarkViewModel(app: Application) : AndroidViewModel(app) {
 
     fun save() {
         val file = selectedFile ?: return
+        val text = content
         viewModelScope.launch {
             saving = true
-            val ok = repo.write(file.uri, content)
+            val ok = repo.write(file.uri, text)
             saving = false
+            if (selectedFile?.uri != file.uri) {
+                // The user moved to another file while this one was saving.
+                statusMessage = if (ok) "Saved ${file.name}" else "Failed to save ${file.name}"
+                return@launch
+            }
             if (ok) {
-                originalContent = content
-                editing = false
+                originalContent = text
+                // Anything typed while the save ran is still unsaved: stay in the editor.
+                if (content == text) editing = false
                 statusMessage = "Saved"
                 refreshContents()
             } else {
