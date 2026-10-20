@@ -109,13 +109,17 @@ class MarkdownRepository(private val context: Context) {
     }
 
     suspend fun write(uri: Uri, content: String): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
-            context.contentResolver.openOutputStream(uri, "wt")?.use { stream ->
-                stream.bufferedWriter().use { it.write(content) }
-            }
-            true
-        }.getOrElse { false }
+        writeText(uri, content)
     }
+
+    // "wt" truncates: some providers leave stale bytes at the end with plain "w".
+    // A provider that hands back no stream counts as a failed write, not a save.
+    private fun writeText(uri: Uri, content: String): Boolean = runCatching {
+        val stream = context.contentResolver.openOutputStream(uri, "wt")
+            ?: return@runCatching false
+        stream.bufferedWriter().use { it.write(content) }
+        true
+    }.getOrDefault(false)
 
     suspend fun queryDisplayName(uri: Uri): String? = withContext(Dispatchers.IO) {
         runCatching {
@@ -131,24 +135,43 @@ class MarkdownRepository(private val context: Context) {
         }.getOrNull()
     }
 
+    /** Names of everything (files and folders) directly inside the workspace root. */
+    suspend fun childNames(rootUri: Uri): Set<String> = withContext(Dispatchers.IO) {
+        val folder = DocumentFile.fromTreeUri(context, rootUri) ?: return@withContext emptySet()
+        runCatching { folder.listFiles() }.getOrDefault(emptyArray())
+            .mapNotNull { it.name }
+            .toSet()
+    }
+
+    /**
+     * Writes [content] to a file named [fileName] in the workspace root.
+     *
+     * An existing file with that name (ignoring case) is replaced only when
+     * [overwrite] is true; otherwise this returns null and touches nothing, so
+     * a file can never be overwritten without the caller asking for it.
+     */
     suspend fun saveContentToWorkspace(
         rootUri: Uri,
         fileName: String,
         content: String,
-    ): Uri? = withContext(Dispatchers.IO) {
+        overwrite: Boolean,
+    ): MarkdownFile? = withContext(Dispatchers.IO) {
         val folder = DocumentFile.fromTreeUri(context, rootUri) ?: return@withContext null
         val safeName = fileName.ifBlank { "untitled.md" }
-        val existing = folder.findFile(safeName)
-        val target = existing
-            ?: folder.createFile(mimeTypeFor(safeName), safeName)
-            ?: return@withContext null
-        val ok = runCatching {
-            context.contentResolver.openOutputStream(target.uri, "wt")?.use { stream ->
-                stream.bufferedWriter().use { it.write(content) }
-            }
-            true
-        }.getOrDefault(false)
-        if (ok) target.uri else null
+        val existing = runCatching { folder.listFiles() }.getOrDefault(emptyArray())
+            .firstOrNull { it.isFile && it.name.equals(safeName, ignoreCase = true) }
+        val target = when {
+            existing != null && overwrite -> existing
+            existing != null -> return@withContext null
+            else -> folder.createFile(mimeTypeFor(safeName), safeName)
+        } ?: return@withContext null
+        if (!writeText(target.uri, content)) return@withContext null
+        MarkdownFile(
+            uri = target.uri,
+            name = target.name ?: safeName,
+            lastModified = System.currentTimeMillis(),
+            sizeBytes = content.length.toLong(),
+        )
     }
 
     private fun mimeTypeFor(fileName: String): String {
