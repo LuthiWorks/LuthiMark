@@ -7,12 +7,12 @@ A Markdown viewer and editor for Android, built with Kotlin and Jetpack Compose.
 ## Features
 
 - **Workspaces (optional):** add any folder as a workspace, keep several, and switch between them from the drawer. Browse subfolders with breadcrumbs.
-- **View and edit:** switch between a rendered preview and the raw text, save your changes, and create new Markdown files.
+- **View and edit:** switch between a rendered preview and the raw text, save your changes, and create new Markdown files. The app asks before discarding unsaved edits.
 - **Find in file:** search the open file and step through the matches.
 - **Recents and stars:** the home screen shows recent files and the ones you've starred.
 - **Syntax highlighting:** code blocks are highlighted for Kotlin, Java, Python, JavaScript, TypeScript, Rust, Swift, C, C++, C#, Ruby, Go, Shell, Perl, PHP and SQL.
 - **Images:** images with relative paths render for files opened from a workspace.
-- **Open from other apps:** open a file from a download, a file manager or the system chooser without setting up a workspace, and save a copy to a workspace if you want to keep it.
+- **Open from other apps:** open a file from a download, a file manager or the system chooser without setting up a workspace, and save a copy to a workspace if you want to keep it. If the workspace already has a file with that name, you can replace it, keep both or cancel.
 - **Other text files:** besides `.md` and `.markdown`, files opened from outside the app can include common text formats such as `.txt`, `.log`, `.json`, `.yaml`, `.toml`, `.csv`, `.py`, `.sh` and `.xml`. Workspace folders list Markdown files only.
 - **Adapts to your device:** the layout adjusts to the screen size, follows the system's light or dark setting, and uses your wallpaper colours on Android 12 and later.
 
@@ -20,11 +20,7 @@ The app's manifest declares no Android permissions. It gets access to a folder o
 
 ## Known issues
 
-- **Save to workspace overwrites without asking.** If the workspace already has a file with the same name, saving replaces it. Until the fix is merged, check the name before saving.
-- **Quick file switching:** opening files in quick succession can show or save one file's text under another's name.
 - **Images in files opened from outside the app:** relative image paths don't render, because the app only has access to that one file. Workspaces aren't affected.
-
-[Pull request #1](https://github.com/LuthiWorks/LuthiMark/pull/1) fixes the first two, along with some problems with back navigation and unsaved edits. It isn't merged yet.
 
 ## Building
 
@@ -35,7 +31,7 @@ You need JDK 21 and the Android SDK. Android Studio includes the SDK, and you ca
 ./gradlew testDebugUnitTest    # runs the unit tests
 ```
 
-On Windows, use `gradlew.bat`. The APK is written to `app/build/outputs/apk/debug/`.
+On Windows, use `gradlew.bat`. The APK is written to `app/build/outputs/apk/debug/`. GitHub Actions runs the same build and unit tests on every push.
 
 ## Project layout
 
