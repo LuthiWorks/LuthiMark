@@ -1,0 +1,55 @@
+name: Build
+
+# Compiles the app and runs the unit tests on every push, so each commit gets
+# a pass/fail check on GitHub without needing Android Studio.
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          # The open-source cache; the default is a commercial caching service.
+          cache-provider: basic
+
+      - name: Build debug APK and run unit tests
+        run: |
+          chmod +x ./gradlew
+          set -o pipefail
+          ./gradlew --console=plain assembleDebug testDebugUnitTest 2>&1 | tee build.log
+
+      # Surface compiler errors and failing tests as annotations on the commit,
+      # so they are readable from the checks list without opening the raw log.
+      - name: Report build errors
+        if: failure()
+        run: |
+          esc() { local s="$1"; s="${s//'%'/'%25'}"; s="${s//$'\r'/'%0D'}"; s="${s//$'\n'/'%0A'}"; printf '%s' "$s"; }
+          [ -f build.log ] || exit 0
+          re='^e: file://([^:]+):([0-9]+):([0-9]+) (.*)$'
+          grep -E '^e: ' build.log | head -40 | while IFS= read -r line; do
+            if [[ $line =~ $re ]]; then
+              file="${BASH_REMATCH[1]#"$GITHUB_WORKSPACE"/}"
+              echo "::error file=$file,line=${BASH_REMATCH[2]},col=${BASH_REMATCH[3]}::$(esc "${BASH_REMATCH[4]}")"
+            else
+              echo "::error::$(esc "$line")"
+            fi
+          done
+          grep -E -A3 ' FAILED$' build.log | head -40 > failed_tests.txt || true
+          if [ -s failed_tests.txt ]; then
+            echo "::error title=Failing tests::$(esc "$(cat failed_tests.txt)")"
+          fi
+          summary="$(sed -n '/What went wrong/,/^\* Try:/p' build.log | head -40)"
+          if [ -n "$summary" ]; then
+            echo "::error title=Gradle failure::$(esc "$summary")"
+          fi

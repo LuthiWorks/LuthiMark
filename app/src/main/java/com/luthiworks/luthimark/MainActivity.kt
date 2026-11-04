@@ -28,9 +28,11 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.layout.AnimatedPane
 import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffoldRole
+import androidx.compose.material3.adaptive.layout.PaneAdaptedValue
 import androidx.compose.material3.adaptive.navigation.NavigableListDetailPaneScaffold
 import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaffoldNavigator
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -47,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import com.luthiworks.luthimark.ui.FileScreen
 import com.luthiworks.luthimark.ui.HomeScreen
 import com.luthiworks.luthimark.ui.LuthiMarkViewModel
+import com.luthiworks.luthimark.ui.SaveConflict
 import com.luthiworks.luthimark.ui.Workspace
 import com.luthiworks.luthimark.ui.WorkspaceDrawerContent
 import com.luthiworks.luthimark.ui.theme.LuthiMarkTheme
@@ -104,6 +107,32 @@ private fun LuthiMarkApp(viewModel: LuthiMarkViewModel) {
         }
     }
 
+    // On a phone the open file covers the list; on a wide screen both show at once.
+    val listVisible =
+        navigator.scaffoldValue[ListDetailPaneScaffoldRole.List] == PaneAdaptedValue.Expanded
+    val detailVisible =
+        navigator.scaffoldValue[ListDetailPaneScaffoldRole.Detail] == PaneAdaptedValue.Expanded
+
+    // Back (gesture or button) leaves a file through the scaffold, which never told
+    // the view model, so the file stayed "open" and the next back exited the app
+    // instead of going up a folder. Close the file whenever its pane goes away.
+    var detailWasVisible by remember { mutableStateOf(detailVisible) }
+    LaunchedEffect(detailVisible) {
+        if (detailWasVisible && !detailVisible) viewModel.closeFile()
+        detailWasVisible = detailVisible
+    }
+
+    // Edits live only in memory until saved, so anything that would replace the
+    // open file asks first. (On a wide screen the list stays tappable mid-edit.)
+    var pendingDiscard by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val unlessUnsaved: (() -> Unit) -> Unit = { action ->
+        if (viewModel.isDirty) {
+            pendingDiscard = action
+        } else {
+            action()
+        }
+    }
+
     var showWorkspacePicker by remember { mutableStateOf(false) }
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
@@ -120,7 +149,9 @@ private fun LuthiMarkApp(viewModel: LuthiMarkViewModel) {
         if (uri != null) viewModel.openIntentUri(uri)
     }
 
-    BackHandler(enabled = viewModel.pathStack.isNotEmpty() && viewModel.selectedFile == null) {
+    // Up a folder whenever the list is on screen. While a file covers the list,
+    // the scaffold's own back handling returns to the list first.
+    BackHandler(enabled = viewModel.pathStack.isNotEmpty() && listVisible) {
         viewModel.goUp()
     }
 
@@ -135,9 +166,16 @@ private fun LuthiMarkApp(viewModel: LuthiMarkViewModel) {
                 WorkspaceDrawerContent(
                     workspaces = viewModel.workspaces,
                     currentRoot = viewModel.rootUri,
-                    onSwitch = viewModel::switchWorkspace,
-                    onAdd = viewModel::addWorkspace,
-                    onRemove = viewModel::removeWorkspace,
+                    onSwitch = { uri -> unlessUnsaved { viewModel.switchWorkspace(uri) } },
+                    onAdd = { uri -> unlessUnsaved { viewModel.addWorkspace(uri) } },
+                    onRemove = { uri ->
+                        // Removing the active workspace closes the open file.
+                        if (uri == viewModel.rootUri) {
+                            unlessUnsaved { viewModel.removeWorkspace(uri) }
+                        } else {
+                            viewModel.removeWorkspace(uri)
+                        }
+                    },
                     onCloseDrawer = { scope.launch { drawerState.close() } },
                 )
             },
@@ -158,44 +196,50 @@ private fun LuthiMarkApp(viewModel: LuthiMarkViewModel) {
                         canGoUp = viewModel.canGoUp,
                         loading = viewModel.loadingFiles,
                         hasAnyWorkspace = viewModel.workspaces.isNotEmpty(),
-                        onAddWorkspace = viewModel::addWorkspace,
+                        onAddWorkspace = { uri -> unlessUnsaved { viewModel.addWorkspace(uri) } },
                         onOpenDrawer = { scope.launch { drawerState.open() } },
                         onRefresh = viewModel::refreshContents,
                         onEnterFolder = viewModel::enterFolder,
                         onGoUp = viewModel::goUp,
                         onBreadcrumbClick = viewModel::goToBreadcrumb,
                         onFileClick = { file ->
-                            viewModel.openFile(file)
-                            scope.launch {
-                                navigator.navigateTo(
-                                    ListDetailPaneScaffoldRole.Detail,
-                                    file.uri,
-                                )
+                            unlessUnsaved {
+                                viewModel.openFile(file)
+                                scope.launch {
+                                    navigator.navigateTo(
+                                        ListDetailPaneScaffoldRole.Detail,
+                                        file.uri,
+                                    )
+                                }
                             }
                         },
                         onEntryClick = { entry ->
-                            viewModel.openRecent(entry)
-                            scope.launch {
-                                navigator.navigateTo(
-                                    ListDetailPaneScaffoldRole.Detail,
-                                    entry.fileUri,
-                                )
+                            unlessUnsaved {
+                                viewModel.openRecent(entry)
+                                scope.launch {
+                                    navigator.navigateTo(
+                                        ListDetailPaneScaffoldRole.Detail,
+                                        entry.fileUri,
+                                    )
+                                }
                             }
                         },
                         onToggleStarFile = viewModel::toggleStarFile,
                         onToggleStarEntry = viewModel::toggleStarFromEntry,
                         onCreateFile = { name ->
-                            viewModel.createFile(name) { newFile ->
-                                viewModel.openFile(newFile)
-                                scope.launch {
-                                    navigator.navigateTo(
-                                        ListDetailPaneScaffoldRole.Detail,
-                                        newFile.uri,
-                                    )
+                            unlessUnsaved {
+                                viewModel.createFile(name) { newFile ->
+                                    viewModel.openFile(newFile)
+                                    scope.launch {
+                                        navigator.navigateTo(
+                                            ListDetailPaneScaffoldRole.Detail,
+                                            newFile.uri,
+                                        )
+                                    }
                                 }
                             }
                         },
-                        onOpenFile = { documentPicker.launch(arrayOf("*/*")) },
+                        onOpenFile = { unlessUnsaved { documentPicker.launch(arrayOf("*/*")) } },
                     )
                 }
             },
@@ -247,6 +291,67 @@ private fun LuthiMarkApp(viewModel: LuthiMarkViewModel) {
             onDismiss = { showWorkspacePicker = false },
         )
     }
+
+    viewModel.saveConflict?.let { conflict ->
+        SaveConflictDialog(
+            conflict = conflict,
+            onKeepBoth = { viewModel.resolveSaveConflict(replace = false) },
+            onReplace = { viewModel.resolveSaveConflict(replace = true) },
+            onCancel = viewModel::cancelSaveConflict,
+        )
+    }
+
+    pendingDiscard?.let { action ->
+        AlertDialog(
+            onDismissRequest = { pendingDiscard = null },
+            title = { Text("Discard changes?") },
+            text = {
+                Text(
+                    "You have unsaved edits to ${viewModel.selectedFile?.name ?: "this file"}. " +
+                        "Continuing will lose them."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDiscard = null
+                    action()
+                }) { Text("Discard") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDiscard = null }) { Text("Keep editing") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SaveConflictDialog(
+    conflict: SaveConflict,
+    onKeepBoth: () -> Unit,
+    onReplace: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("File already exists") },
+        text = {
+            Text(
+                "\"${conflict.fileName}\" already exists in ${conflict.workspaceName}. " +
+                    "Replace it, or keep both and save this copy as \"${conflict.alternateName}\"?"
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onKeepBoth) { Text("Keep both") }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onCancel) { Text("Cancel") }
+                TextButton(onClick = onReplace) {
+                    Text("Replace", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+    )
 }
 
 @Composable
